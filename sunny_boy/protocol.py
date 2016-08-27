@@ -34,6 +34,30 @@ class SunnyNetAddress(object):
         return pack(self.ADDRESS_FORMAT, self._sender, self._destination, self._control_byte)
 
     @property
+    def sender(self):
+        """Sender address
+        """
+        return self._sender
+
+    @property
+    def destination(self):
+        """Destination address
+        """
+        return self._destination
+
+    @property
+    def address_type(self):
+        """Address type option
+        """
+        return self._address_type
+
+    @property
+    def msg_type(self):
+        """Msg type option
+        """
+        return self._msg_type
+
+    @property
     def _control_byte(self):
         """Control byte
         """
@@ -43,13 +67,14 @@ class SunnyNetAddress(object):
     def from_bytes(cls, bytes_):
         """Generates a SunnyNetAddress object from a byte string corresponding to a data packet
         """
-        return cls(*unpack(cls.ADDRESS_FORMAT, bytes_[4:9]))
+        sender, destination, msg_address_type = unpack(cls.ADDRESS_FORMAT, bytes_[4:9])
+        return cls(sender, destination, msg_address_type, msg_address_type)
 
 class SunnyNetDataPacket(object):
     """Creates a data transmission packet
     """
-    START_BYTE = 0x68
-    STOP_BYTE = 0x16
+    START_BYTE = b'\x68'
+    STOP_BYTE = b'\x16'
 
     HEADER_FORMAT = '>BBBB'
     MAX_SIZE = 256
@@ -67,6 +92,20 @@ class SunnyNetDataPacket(object):
                 len(data), self.MAX_SIZE))
         self._data = data
 
+    def __str__(self):
+        return "{type_} packet with command 0x{command:02X} from {sender:04X} to {destination:04X}"\
+            " (length: {byte_len}): {payload}".format(
+                type_={
+                    SunnyNetAddress.MSG_TYPE_REQUEST: "Request",
+                    SunnyNetAddress.MSG_TYPE_RESPONSE: "Response",
+                }[self.address.msg_type],
+                command=self.command,
+                sender=self.address.sender,
+                destination=self.address.destination,
+                byte_len=len(self.data),
+                payload=" ".join(["0x{:02X}".format(b) for b in self.data]),
+            )
+
     @property
     def bytes(self):
         """Generator for 1 or more packets of data bytes
@@ -76,7 +115,7 @@ class SunnyNetDataPacket(object):
              + self._command_byte + self.data
         checksum = self.calculate_check_sum(main_packet)
 
-        return self._header_bytes + main_packet + checksum + pack('>B', self.STOP_BYTE)
+        return self._header_bytes + main_packet + checksum + self.STOP_BYTE
 
     @property
     def address(self):
@@ -106,8 +145,7 @@ class SunnyNetDataPacket(object):
     def _header_bytes(self):
         """Generates the header, which contains start bytes & length info
         """
-        return pack(self.HEADER_FORMAT, self.START_BYTE, len(self.data), len(self.data),
-                    self.START_BYTE)
+        return self.START_BYTE + pack('>BB', len(self.data), len(self.data)) + self.START_BYTE
 
     @staticmethod
     def calculate_check_sum(data):
