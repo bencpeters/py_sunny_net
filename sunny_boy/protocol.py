@@ -4,34 +4,33 @@ https://256stuff.com/solar/scripts/swrnet_session_protocol.pdf
 Author: Ben Peters
 Date: 8/23/2016
 """
-
 from struct import unpack, pack
 
 class SunnyNetAddress(object):
     """Wraps the addressing portion of a SunnyNet data message
     """
-    ADDRESS_FORMAT = '>HHB'
+    ADDRESS_FORMAT = '>HH'
 
     ADDRESS_TYPE_MASK = 0x80
-    ADDRESS_TYPE_GROUP = 0x80
-    ADDRESS_TYPE_NETWORK = 0x00
+    ADDRESS_TYPE_GROUP = b'\x80'
+    ADDRESS_TYPE_NETWORK = b'\x00'
 
     MSG_TYPE_MASK = 0x40
-    MSG_TYPE_REQUEST = 0x00
-    MSG_TYPE_RESPONSE = 0x40
+    MSG_TYPE_REQUEST = b'\x00'
+    MSG_TYPE_RESPONSE = b'\x40'
 
     def __init__(self, sender, destination, address_type,
                  msg_type=SunnyNetAddress.MSG_TYPE_REQUEST):
         self._sender = sender
         self._destination = destination
-        self._address_type = address_type & self.ADDRESS_TYPE_MASK
-        self._msg_type = msg_type & self.MSG_TYPE_MASK
+        self._address_type = address_type
+        self._msg_type = msg_type
 
     @property
     def addressing_bytes(self):
         """Generates the addressing component
         """
-        return pack(self.ADDRESS_FORMAT, self._sender, self._destination, self._control_byte)
+        return pack(self.ADDRESS_FORMAT, self._sender, self._destination) + self._control_byte
 
     @property
     def sender(self):
@@ -61,14 +60,16 @@ class SunnyNetAddress(object):
     def _control_byte(self):
         """Control byte
         """
-        return pack('>B', self._address_type | self._msg_type)
+        return self._address_type | self._msg_type
 
     @classmethod
     def from_bytes(cls, bytes_):
         """Generates a SunnyNetAddress object from a byte string corresponding to a data packet
         """
-        sender, destination, msg_address_type = unpack(cls.ADDRESS_FORMAT, bytes_[4:9])
-        return cls(sender, destination, msg_address_type, msg_address_type)
+        sender, destination = unpack(cls.ADDRESS_FORMAT, bytes_[4:8])
+        msg_type = bytes([bytes_[8] & cls.MSG_TYPE_MASK])
+        address_type = bytes([bytes_[8] & cls.ADDRESS_TYPE_MASK])
+        return cls(sender, destination, address_type, msg_type)
 
 class SunnyNetDataPacket(object):
     """Creates a data transmission packet
@@ -93,26 +94,25 @@ class SunnyNetDataPacket(object):
         self._data = data
 
     def __str__(self):
-        return "{type_} packet with command 0x{command:02X} from {sender:04X} to {destination:04X}"\
+        return "{type_} packet with command 0x{command} from {sender:04X} to {destination:04X}"\
             " (length: {byte_len}): {payload}".format(
                 type_={
                     SunnyNetAddress.MSG_TYPE_REQUEST: "Request",
                     SunnyNetAddress.MSG_TYPE_RESPONSE: "Response",
                 }[self.address.msg_type],
-                command=self.command,
+                command=self.command.hex().upper(),
                 sender=self.address.sender,
                 destination=self.address.destination,
                 byte_len=len(self.data),
                 payload=" ".join(["0x{:02X}".format(b) for b in self.data]),
             )
 
-    @property
-    def bytes(self):
-        """Generator for 1 or more packets of data bytes
+    def __bytes__(self):
+        """Returns a bytes representation of this data packet
         """
         num_packets_remaining = self._num_packets - self._packet_num
         main_packet = self.address.addressing_bytes + pack('>H', num_packets_remaining) + \
-             + self._command_byte + self.data
+             + self._command + self.data
         checksum = self.calculate_check_sum(main_packet)
 
         return self._header_bytes + main_packet + checksum + self.STOP_BYTE
@@ -134,12 +134,6 @@ class SunnyNetDataPacket(object):
         """Bytes data array from this packet
         """
         return self._data
-
-    @property
-    def _command_byte(self):
-        """Command to send
-        """
-        return pack('>B', self.command)
 
     @property
     def _header_bytes(self):
@@ -166,12 +160,13 @@ class SunnyNetDataPacket(object):
         packet_check_sum = bytes_[-3:-1]
 
         if check_sum != packet_check_sum:
-            raise ValueError("Packet checksum ({:02X}) does not match calculated checksum ({:02X})"
-                             .format(packet_check_sum, check_sum))
+            raise ValueError("Packet checksum (0x{}) does not match calculated checksum (0X{})"
+                             .format(packet_check_sum.hex().upper(), check_sum.hex().sum()))
 
 
         address = SunnyNetAddress.from_bytes(bytes_)
-        packet_num, cmd = unpack('>BB', bytes_[9:11])
+        packet_num = bytes_[9]
+        cmd = bytes_[10:11]
         data = bytes_[12:-3]
 
         return cls(address, cmd, data, packet_num, total_packets)
