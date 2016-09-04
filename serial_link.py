@@ -25,7 +25,7 @@ def print_output(data):
 XBEE_DEVICES = {
     0x0013A200409F3F0C: {
     },
-    0x0013A20040A8C1E8: {
+    0x0013A20040D96797: {
         "handler": print_output,
         "buffer_input": True,
     },
@@ -157,7 +157,7 @@ def main():
     }
     configure_logging()
     serial_port, xbee = connect(opts["port"], process_frame, opts["baud_rate"])
-    start_event_loop(xbee, 0x0013A20040A8C1E8)
+    start_event_loop(xbee, 0x0013A20040D96797)
 
 if __name__ == '__main__':
     main()
