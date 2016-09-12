@@ -14,19 +14,27 @@ import signal
 
 from xbee import ZigBee
 
+import sunny_boy
+
 out_logger = logging.getLogger('sent')
 in_logger = logging.getLogger('received')
-input_buffers = defaultdict(list)
+input_buffers = defaultdict(bytearray)
 serial_port = None
 
 def print_output(data):
     in_logger.info(data)
 
+def print_sb_packet(data):
+    """Prints the received SunnyNet packet
+    """
+    packet = sunny_boy.SunnyNetDataPacket.from_bytes(data)
+    in_logger.info(packet)
+
 XBEE_DEVICES = {
     0x0013A200409F3F0C: {
     },
     0x0013A20040D96797: {
-        "handler": print_output,
+        "handler": print_sb_packet,
         "buffer_input": True,
     },
 }
@@ -43,15 +51,14 @@ class MsgCounterHandler(logging.StreamHandler):
         super(MsgCounterHandler, self).emit(record)
         self._counts[record.name][record.levelname] += 1
 
-def buffer_input_data(addr, data, cb):
+def buffer_input_data(addr, data, cb, stop_chars=(b'\n', b'\r')):
     """Buffers the incoming data in an array buffer until a newline character is encountered, then
     calls the provided callback function with the resulting data
     """
-    str_data = data.decode()
-    for c in str_data:
+    for c in data:
         input_buffers[addr].append(c)
-        if c == '\n' or c == '\r':
-            cb("".join(input_buffers[addr]))
+        if c in stop_chars:
+            cb(input_buffers[addr])
             del input_buffers[addr]
 
 def connect(port, handler, baud=9600):
@@ -82,7 +89,8 @@ def process_frame(data):
             handler = dev["handler"]
 
             if dev["buffer_input"] is True:
-                buffer_input_data(source, data["rf_data"], handler)
+                buffer_input_data(source, data["rf_data"], handler,
+                                  sunny_boy.SunnyNetDataPacket.STOP_BYTE)
             else:
                 handler(data["rf_data"])
         except KeyError:
@@ -109,20 +117,17 @@ def process_input(q):
     """
     asyncio.async(q.put(sys.stdin.readline()))
 
-async def send_data(xbee, addr, q, buffer_time=500):
+async def send_from_queue(q):
+    while 1:
+        msg = await q.get()
+        send_data(**msg)
+
+def send_data(xbee, addr, data):
     """Sends data over the radio
     """
     byte_addr = binascii.unhexlify("{:016X}".format(addr))
-    print("Echoing input to 0x{:016X}...".format(addr))
-
-    def _send(data):
-        out_logger.info(''.join(data))
-        xbee.send("tx", dest_addr=bytes([0xFF, 0xFE]), dest_addr_long=byte_addr,
-                  data=bytes(data, 'utf8'))
-
-    while 1:
-        new_data = await q.get()
-        _send(new_data)
+    out_logger.info("Bytes: %s", " ".join("0x{:02X}".format(b) for b in data))
+    xbee.send("tx", dest_addr=bytes([0xFF, 0xFE]), dest_addr_long=byte_addr, data=data)
 
 def start_event_loop(xbee, receiving_device):
     """Starts the main event loop to listen for input over the radios & handle data
@@ -135,8 +140,15 @@ def start_event_loop(xbee, receiving_device):
 
     loop.add_signal_handler(signal.SIGINT, exit)
 
+    for packet in sunny_boy.system_config_request().packets:
+        send_queue.put_nowait({
+            "xbee": xbee,
+            "addr": receiving_device,
+            "data": bytes(packet),
+        })
+
     #loop.run_forever()
-    loop.run_until_complete(send_data(xbee, receiving_device, send_queue))
+    loop.run_until_complete(send_from_queue(send_queue))
 
 def exit():
     """Exit the program
