@@ -9,7 +9,7 @@ from struct import unpack, pack
 class SunnyNetAddress(object):
     """Wraps the addressing portion of a SunnyNet data message
     """
-    ADDRESS_FORMAT = '>HH'
+    ADDRESS_FORMAT = '<HH'
 
     ADDRESS_TYPE_MASK = 0x80
     ADDRESS_TYPE_GROUP = b'\x80'
@@ -20,14 +20,13 @@ class SunnyNetAddress(object):
     MSG_TYPE_RESPONSE = b'\x40'
 
     def __init__(self, sender, destination, address_type,
-                 msg_type=SunnyNetAddress.MSG_TYPE_REQUEST):
+                 msg_type=MSG_TYPE_REQUEST):
         self._sender = sender
         self._destination = destination
         self._address_type = address_type
         self._msg_type = msg_type
 
-    @property
-    def addressing_bytes(self):
+    def __bytes__(self):
         """Generates the addressing component
         """
         return pack(self.ADDRESS_FORMAT, self._sender, self._destination) + self._control_byte
@@ -60,15 +59,15 @@ class SunnyNetAddress(object):
     def _control_byte(self):
         """Control byte
         """
-        return self._address_type | self._msg_type
+        return bytes([self._address_type[0] | self._msg_type[0]])
 
     @classmethod
     def from_bytes(cls, bytes_):
         """Generates a SunnyNetAddress object from a byte string corresponding to a data packet
         """
-        sender, destination = unpack(cls.ADDRESS_FORMAT, bytes_[4:8])
-        msg_type = bytes([bytes_[8] & cls.MSG_TYPE_MASK])
-        address_type = bytes([bytes_[8] & cls.ADDRESS_TYPE_MASK])
+        sender, destination = unpack(cls.ADDRESS_FORMAT, bytes_[6:10])
+        msg_type = bytes([bytes_[10] & cls.MSG_TYPE_MASK])
+        address_type = bytes([bytes_[10] & cls.ADDRESS_TYPE_MASK])
         return cls(sender, destination, address_type, msg_type)
 
 class SunnyNetDataPacket(object):
@@ -76,11 +75,12 @@ class SunnyNetDataPacket(object):
     """
     START_BYTE = b'\x68'
     STOP_BYTE = b'\x16'
+    SYNC_BYTE = b'\xAA'
 
     HEADER_FORMAT = '>BBBB'
     MAX_SIZE = 256
 
-    def __init__(self, address, command, data=(), packet_num=1, num_packets=1):
+    def __init__(self, address, command, data=b'', packet_num=1, num_packets=1):
         #pylint: disable-msg=too-many-arguments
         self._address = address
         self._command = command
@@ -111,11 +111,12 @@ class SunnyNetDataPacket(object):
         """Returns a bytes representation of this data packet
         """
         num_packets_remaining = self._num_packets - self._packet_num
-        main_packet = self.address.addressing_bytes + pack('>H', num_packets_remaining) + \
-             + self._command + self.data
+        main_packet = bytes(self.address) + pack('<B', num_packets_remaining) + self._command + \
+            self.data
         checksum = self.calculate_check_sum(main_packet)
 
-        return self._header_bytes + main_packet + checksum + self.STOP_BYTE
+        return self.SYNC_BYTE + self.SYNC_BYTE + self._header_bytes + main_packet + checksum + \
+               self.STOP_BYTE
 
     @property
     def address(self):
@@ -139,7 +140,7 @@ class SunnyNetDataPacket(object):
     def _header_bytes(self):
         """Generates the header, which contains start bytes & length info
         """
-        return self.START_BYTE + pack('>BB', len(self.data), len(self.data)) + self.START_BYTE
+        return self.START_BYTE + pack('<BB', len(self.data), len(self.data)) + self.START_BYTE
 
     @staticmethod
     def calculate_check_sum(data):
@@ -150,24 +151,24 @@ class SunnyNetDataPacket(object):
         for byte in data:
             checksum += byte
 
-        return pack('>H', checksum & 0xFFFF)
+        return pack('<H', checksum & 0xFFFF)
 
     @classmethod
     def from_bytes(cls, bytes_, total_packets=1):
         """Constructs a SunnyNetData object from bytes
         """
-        check_sum = cls.calculate_check_sum(bytes_[4:-3])
+        check_sum = cls.calculate_check_sum(bytes_[6:-3])
         packet_check_sum = bytes_[-3:-1]
 
         if check_sum != packet_check_sum:
             raise ValueError("Packet checksum (0x{}) does not match calculated checksum (0X{})"
-                             .format(packet_check_sum.hex().upper(), check_sum.hex().sum()))
+                             .format(packet_check_sum.hex().upper(), check_sum.hex().upper()))
 
 
         address = SunnyNetAddress.from_bytes(bytes_)
-        packet_num = bytes_[9]
-        cmd = bytes_[10:11]
-        data = bytes_[12:-3]
+        packet_num = bytes_[11]
+        cmd = bytes_[12:13]
+        data = bytes_[14:-3]
 
         return cls(address, cmd, data, packet_num, total_packets)
 
@@ -176,7 +177,7 @@ class SunnyNetData(object):
     one or more data packets
     """
 
-    def __init__(self, address, command, data=()):
+    def __init__(self, address, command, data=b''):
         self._address = address
         self._command = command
         self._data = data
@@ -202,7 +203,7 @@ class SunnyNetData(object):
     def num_packets(self):
         """Number of data packets that this data message takes
         """
-        return (len(self) / SunnyNetDataPacket.MAX_SIZE) + 1
+        return int(len(self) / SunnyNetDataPacket.MAX_SIZE) + 1
 
     @property
     def packets(self):
@@ -213,7 +214,7 @@ class SunnyNetData(object):
         for i in range(self.num_packets):
             yield SunnyNetDataPacket(self.address, self.command,
                                      self._data[i * max_size: (i + 1) * max_size],
-                                     self.num_packets - i - 1)
+                                     self.num_packets - i)
 
     @classmethod
     def from_packets(cls, raw_packets):
@@ -223,7 +224,7 @@ class SunnyNetData(object):
         address = None
         command = None
 
-        user_bytes = []
+        user_bytes = bytearray
 
         for bytes_ in raw_packets:
             packet = SunnyNetDataPacket.from_bytes(bytes_, num_packets)
